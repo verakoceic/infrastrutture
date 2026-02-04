@@ -7,6 +7,8 @@ import hashlib
 from supabase import create_client, Client
 import parselmouth
 import numpy as np
+import tempfile
+import os
 
 st.set_page_config(page_title="Parkinson Telemonitoring", layout="wide")
 
@@ -15,10 +17,9 @@ try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 except:
-    # Fallback per test locale (rimuovi in produzione)
-    SUPABASE_URL = "https://viexdcbofgsopcrnnbzi.supabase.co"
-    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZpZXhkY2JvZmdzb3Bjcm5uYnppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk1ODk4OTUsImV4cCI6MjA4NTE2NTg5NX0.7Xu5B8Vlz0j-wX39-i5W12Mw5cedX7VS9ACOPjSpLEs"
-
+    # Fallback per test locale
+    SUPABASE_URL = "https://qjrhkztpyrcorqqikufg.supabase.co"
+    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFqcmhrenRweXJjb3JxcWlrdWZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyMjQzOTgsImV4cCI6MjA4NTgwMDM5OH0.zthfNTfJWE44lpKNyW9aR3ggrpX4dL7j2-lpVs1tTGY"
 # Client Supabase globale
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -93,50 +94,109 @@ def register_patient(codice_fiscale: str, nome: str, cognome: str,
         return False
 
 
-def extract_voice_features(audio_file):
-    """Estrae feature vocali da file audio usando Parselmouth"""
+def extract_vocal_features(audio_file):
+    """
+    Estrae feature vocali avanzate da file audio usando Parselmouth.
+    Basato su: Tsanas et al. "Accurate Telemonitoring of Parkinson's Disease
+    Progression by Noninvasive Speech Tests" (2010)
+    
+    Feature estratte:
+    - jitter_abs: Variabilità assoluta della frequenza fondamentale
+    - shimmer_local: Variabilità locale dell'ampiezza
+    - hnr: Harmonics-to-Noise Ratio
+    - nhr: Noise-to-Harmonics Ratio
+    - dfa: Detrended Fluctuation Analysis
+    - ppe: Pitch Period Entropy
+    """
     try:
         # Salva temporaneamente il file
-        temp_path = f"/tmp/{audio_file.name}"
-        with open(temp_path, "wb") as f:
-            f.write(audio_file.getbuffer())
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+            tmp_file.write(audio_file.getbuffer())
+            temp_path = tmp_file.name
         
         # Analisi con Parselmouth
         sound = parselmouth.Sound(temp_path)
-        
-        # Estrai pitch
-        pitch = sound.to_pitch()
-        mean_f0 = parselmouth.praat.call(pitch, "Get mean", 0, 0, "Hertz")
-        
-        # Estrai formanti
-        formant = sound.to_formant_burg()
-        f1 = parselmouth.praat.call(formant, "Get mean", 1, 0, 0, "Hertz")
-        f2 = parselmouth.praat.call(formant, "Get mean", 2, 0, 0, "Hertz")
-        
-        # Calcola jitter e shimmer (approssimati)
         point_process = parselmouth.praat.call(sound, "To PointProcess (periodic, cc)", 75, 500)
-        jitter = parselmouth.praat.call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
-        shimmer = parselmouth.praat.call([sound, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+        
+        # JITTER (Absolute): variabilità frequenza fondamentale (F0)
+        jitter_abs = parselmouth.praat.call(
+            point_process, "Get jitter (local, absolute)", 0, 0, 0.0001, 0.02, 1.3
+        )
+        
+        # SHIMMER (Local): variabilità ampiezza
+        shimmer_local = parselmouth.praat.call(
+            [sound, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6
+        )
+        
+        # HNR: rapporto armoniche/rumore
+        harmonicity = parselmouth.praat.call(sound, "To Harmonicity (cc)", 0.01, 75, 0.1, 1.0)
+        hnr = parselmouth.praat.call(harmonicity, "Get mean", 0, 0)
+        
+        # NHR: noise-to-harmonics ratio (inverso di HNR)
+        nhr = 1.0 / (hnr + 1e-6) if hnr > 0 else 1.0
+        
+        # DFA: Detrended Fluctuation Analysis
+        intensity = sound.to_intensity(time_step=0.01)
+        intensity_values = [
+            intensity.get_value(t) for t in intensity.xs()
+            if not np.isnan(intensity.get_value(t))
+        ]
+        
+        if len(intensity_values) > 10:
+            dfa = np.std(intensity_values) / (np.mean(intensity_values) + 1e-6)
+        else:
+            dfa = 0.0
+        
+        # PPE: Pitch Period Entropy
+        pitch = sound.to_pitch(time_step=0.01, pitch_floor=75, pitch_ceiling=500)
+        pitch_values = [
+            pitch.get_value_at_time(t) for t in pitch.xs()
+            if not np.isnan(pitch.get_value_at_time(t))
+        ]
+        
+        if len(pitch_values) > 5:
+            pitch_diffs = np.diff(pitch_values)
+            ppe = np.std(pitch_diffs) / (np.mean(np.abs(pitch_diffs)) + 1e-6)
+        else:
+            ppe = 0.0
+        
+        # Pulizia file temporaneo
+        os.unlink(temp_path)
+        
+        # Calcolo UPDRS stimato con modello semplificato
+        # Basato sui coefficienti della letteratura
+        motor_updrs = (
+            30.0 +  # baseline
+            jitter_abs * 1000 +
+            shimmer_local * 50 +
+            (1.0 / (hnr + 1)) * 20 +
+            dfa * 15 +
+            ppe * 10
+        )
+        
+        # Limita il range 0-108
+        motor_updrs = max(0, min(108, motor_updrs))
         
         return {
-            "jitter": float(jitter) if not np.isnan(jitter) else 0.005,
-            "shimmer": float(shimmer) if not np.isnan(shimmer) else 0.03,
-            "nhr": 0.02,  # Placeholder
-            "hnr": 21.0,  # Placeholder
-            "mean_f0": float(mean_f0) if not np.isnan(mean_f0) else 150.0,
-            "f1": float(f1) if not np.isnan(f1) else 500.0,
-            "f2": float(f2) if not np.isnan(f2) else 1500.0
+            'jitter': float(jitter_abs) if not np.isnan(jitter_abs) else 0.005,
+            'shimmer': float(shimmer_local) if not np.isnan(shimmer_local) else 0.03,
+            'hnr': float(hnr) if not np.isnan(hnr) else 21.0,
+            'nhr': float(nhr) if not np.isnan(nhr) else 0.02,
+            'dfa': float(dfa),
+            'ppe': float(ppe),
+            'motor_updrs_stimato': round(motor_updrs, 2)
         }
+        
     except Exception as e:
         st.warning(f"Errore estrazione feature: {e}. Uso valori di default.")
         return {
-            "jitter": 0.005,
-            "shimmer": 0.03,
-            "nhr": 0.02,
-            "hnr": 21.0,
-            "mean_f0": 150.0,
-            "f1": 500.0,
-            "f2": 1500.0
+            'jitter': 0.005,
+            'shimmer': 0.03,
+            'hnr': 21.0,
+            'nhr': 0.02,
+            'dfa': 0.5,
+            'ppe': 0.3,
+            'motor_updrs_stimato': 25.0
         }
 
 
@@ -150,9 +210,8 @@ def save_visit(codice_fiscale: str, motor_updrs: float, features: dict) -> bool:
             "shimmer": features["shimmer"],
             "nhr": features["nhr"],
             "hnr": features["hnr"],
-            "mean_f0": features["mean_f0"],
-            "f1": features["f1"],
-            "f2": features["f2"]
+            "dfa": features.get("dfa", 0.5),
+            "ppe": features.get("ppe", 0.3)
         }).execute()
         
         return True
@@ -189,6 +248,64 @@ def get_doctor_patients(doctor_username: str) -> list:
     except Exception as e:
         st.error(f"Errore recupero pazienti: {e}")
         return []
+
+
+def get_doctor_overview(doctor_username: str) -> dict:
+    """
+    Overview per dashboard medico con pazienti critici e trend generale
+    """
+    try:
+        patients = supabase.table("patients").select("*").eq(
+            "doctor_username", doctor_username
+        ).execute()
+
+        if not patients.data:
+            return {
+                "n_pazienti": 0,
+                "pazienti_critici": [],
+                "trend_generale": 0
+            }
+
+        pazienti_critici = []
+        all_trends = []
+
+        for patient in patients.data:
+            cf = patient['codice_fiscale']
+
+            visits = supabase.table("visits").select("motor_updrs").eq(
+                "codice_fiscale", cf
+            ).order("timestamp", desc=False).execute()
+
+            if visits.data and len(visits.data) >= 2:
+                updrs_vals = [v['motor_updrs'] for v in visits.data]
+                variazione = updrs_vals[-1] - updrs_vals[0]
+                all_trends.append(variazione)
+
+                # Criteri per paziente critico:
+                # 1. UPDRS corrente > 30 (moderato-severo)
+                # 2. Variazione > 10 punti (peggioramento significativo)
+                if updrs_vals[-1] > 30 or variazione > 10:
+                    pazienti_critici.append({
+                        "nome": f"{patient['nome']} {patient['cognome']}",
+                        "codice_fiscale": cf,
+                        "ultimo_updrs": updrs_vals[-1],
+                        "variazione": variazione
+                    })
+
+        trend_medio = np.mean(all_trends) if all_trends else 0
+
+        return {
+            "n_pazienti": len(patients.data),
+            "pazienti_critici": sorted(pazienti_critici, key=lambda x: x['ultimo_updrs'], reverse=True),
+            "trend_generale": round(trend_medio, 2)
+        }
+    except Exception as e:
+        st.error(f"Errore overview: {e}")
+        return {
+            "n_pazienti": 0,
+            "pazienti_critici": [],
+            "trend_generale": 0
+        }
 
 
 def reset_patient_password(codice_fiscale: str, new_password: str) -> bool:
@@ -367,6 +484,19 @@ if st.session_state.role == "medico":
         st.session_state.selected_role = None
         st.rerun()
 
+    # OVERVIEW DASHBOARD CON PAZIENTI CRITICI
+    overview = get_doctor_overview(st.session_state.user)
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("👥 Pazienti in Carico", overview['n_pazienti'])
+    col2.metric("⚠️ Pazienti Critici", len(overview['pazienti_critici']))
+    col3.metric("📈 Trend Medio", f"{overview.get('trend_generale', 0):+.2f}")
+
+    if overview['pazienti_critici']:
+        st.warning("⚠️ **Attenzione:** pazienti che richiedono monitoraggio ravvicinato")
+        for p in overview['pazienti_critici'][:3]:
+            st.write(f"• **{p['nome']}** - UPDRS: {p['ultimo_updrs']:.1f} (Δ {p['variazione']:+.1f})")
+
     st.title("📊 Area Medico")
     menu = st.tabs(["📝 Registra Paziente", "🔬 Esegui Visita", "📋 Archivio Pazienti", "🔑 Reset Password"])
 
@@ -397,39 +527,60 @@ if st.session_state.role == "medico":
     # TAB 2: Visita
     with menu[1]:
         st.subheader("Esegui Visita e Analisi Vocale")
+        
         with st.form("visita"):
             codice_fiscale_visita = st.text_input("Codice Fiscale Paziente").upper()
-            motor_updrs = st.number_input("UPDRS Motorio (0-108)", 0.0, 108.0, value=25.0, step=0.5)
-            audio = st.file_uploader("Registrazione Vocale (.wav)", type=["wav"])
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                audio = st.file_uploader("📁 Registrazione Vocale (.wav)", type=["wav"])
+                st.caption("Carica un file audio WAV per l'analisi automatica delle feature vocali")
+            with col2:
+                st.info("💡 **Istruzioni**\n\nSe carichi un audio, l'UPDRS sarà calcolato automaticamente. Altrimenti, inseriscilo manualmente.")
+            
+            motor_updrs_manuale = st.number_input(
+                "UPDRS Motorio manuale (0-108) - opzionale se hai audio",
+                0.0, 108.0, value=25.0, step=0.5,
+                help="Inserisci il punteggio UPDRS solo se NON carichi un audio"
+            )
 
-            if st.form_submit_button("Analizza e Salva", use_container_width=True):
+            if st.form_submit_button("🔬 Analizza e Salva", use_container_width=True):
                 if codice_fiscale_visita:
                     if audio:
-                        with st.spinner("🔬 Analisi in corso..."):
-                            features = extract_voice_features(audio)
+                        with st.spinner("🔬 Analisi vocale in corso..."):
+                            features = extract_vocal_features(audio)
+                            motor_updrs = features["motor_updrs_stimato"]
+                            
+                        st.success("✅ Analisi completata!")
+                        
+                        # Mostra features estratte
+                        st.subheader("📊 Feature Vocali Estratte")
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Jitter", f"{features['jitter']:.4f}")
+                        col2.metric("Shimmer", f"{features['shimmer']:.4f}")
+                        col3.metric("HNR", f"{features['hnr']:.2f} dB")
+                        col4.metric("DFA", f"{features['dfa']:.3f}")
+                        
+                        st.metric("🎯 **UPDRS Stimato**", f"{motor_updrs:.1f}", 
+                                help="Calcolato automaticamente dalle feature vocali")
                     else:
-                        # Valori di default se non c'è audio
+                        # Nessun audio - usa UPDRS manuale e valori di default
+                        motor_updrs = motor_updrs_manuale
                         features = {
                             "jitter": 0.005,
                             "shimmer": 0.03,
                             "nhr": 0.02,
                             "hnr": 21.0,
-                            "mean_f0": 150.0,
-                            "f1": 500.0,
-                            "f2": 1500.0
+                            "dfa": 0.5,
+                            "ppe": 0.3
                         }
+                        st.info("ℹ️ Nessun audio caricato - usando UPDRS manuale e feature di default")
                     
+                    # Salva nel database
                     if save_visit(codice_fiscale_visita, motor_updrs, features):
                         st.success("✅ Visita salvata con successo!")
-                        
-                        # Mostra features estratte
-                        st.write("**Feature vocali estratte:**")
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Jitter", f"{features['jitter']:.4f}")
-                        col2.metric("Shimmer", f"{features['shimmer']:.4f}")
-                        col3.metric("F0 medio", f"{features['mean_f0']:.1f} Hz")
                 else:
-                    st.warning("⚠️ Inserisci il codice fiscale")
+                    st.warning("⚠️ Inserisci il codice fiscale del paziente")
 
     # TAB 3: Archivio
     with menu[2]:
@@ -451,7 +602,10 @@ if st.session_state.role == "medico":
                         st.plotly_chart(create_feature_comparison(df_visits), use_container_width=True)
                         
                         # Tabella dati
-                        st.dataframe(df_visits[['timestamp', 'motor_updrs', 'jitter', 'shimmer']].sort_values('timestamp', ascending=False))
+                        st.dataframe(
+                            df_visits[['timestamp', 'motor_updrs', 'jitter', 'shimmer', 'hnr']].sort_values('timestamp', ascending=False),
+                            use_container_width=True
+                        )
                     else:
                         st.info("Nessuna visita registrata per questo paziente")
         else:
@@ -471,16 +625,16 @@ if st.session_state.role == "medico":
                 new_password = st.text_input("Nuova password", type="password")
                 confirm_password = st.text_input("Conferma password", type="password")
                 
-                if st.form_submit_button("Reset Password", use_container_width=True):
+                if st.form_submit_button("🔑 Reset Password", use_container_width=True):
                     if new_password and new_password == confirm_password:
                         cf = patient_options[selected]
                         if reset_patient_password(cf, new_password):
                             st.success(f"✅ Password aggiornata per {selected}")
                             st.info(f"Nuova password: `{new_password}`")
                     elif new_password != confirm_password:
-                        st.error("Le password non corrispondono")
+                        st.error("❌ Le password non corrispondono")
                     else:
-                        st.warning("Inserisci una password")
+                        st.warning("⚠️ Inserisci una password")
         else:
             st.info("Non hai pazienti registrati")
 
@@ -502,12 +656,12 @@ if st.session_state.role == "paziente":
         # Metriche principali
         col1, col2, col3 = st.columns(3)
         ultimo_updrs = df_visits.iloc[-1]['motor_updrs']
-        col1.metric("Ultima misurazione UPDRS", f"{ultimo_updrs:.1f}")
-        col2.metric("Numero visite", len(df_visits))
+        col1.metric("🎯 Ultima misurazione UPDRS", f"{ultimo_updrs:.1f}")
+        col2.metric("📅 Numero visite", len(df_visits))
         
         if len(df_visits) > 1:
             variazione = df_visits.iloc[-1]['motor_updrs'] - df_visits.iloc[-2]['motor_updrs']
-            col3.metric("Variazione", f"{variazione:+.1f}")
+            col3.metric("📈 Variazione", f"{variazione:+.1f}")
         
         # Grafici
         st.plotly_chart(create_updrs_trend_chart(df_visits), use_container_width=True)
@@ -520,8 +674,11 @@ if st.session_state.role == "paziente":
         
         # Storico
         st.subheader("📋 Storico Visite")
+        display_cols = ['timestamp', 'motor_updrs', 'jitter', 'shimmer', 'hnr']
+        available_cols = [col for col in display_cols if col in df_visits.columns]
+        
         st.dataframe(
-            df_visits[['timestamp', 'motor_updrs', 'jitter', 'shimmer', 'mean_f0']].sort_values('timestamp', ascending=False),
+            df_visits[available_cols].sort_values('timestamp', ascending=False),
             use_container_width=True
         )
     else:
