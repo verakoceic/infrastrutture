@@ -1,9 +1,9 @@
-fastapi==0.104.1
-uvicorn==0.24.0
-streamlit==1.31.1
-supabase==2.27.2
-pandas==2.0.3
-python-multipart==0.0.6
+fastapi
+uvicorn
+streamlit
+supabase
+pandas
+python-multipart
 plotly
 numpy
-parselmouth-praat
+praat-parselmouth
