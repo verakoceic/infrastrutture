@@ -1,9 +1,6 @@
-fastapi
-uvicorn
 streamlit
 supabase
 pandas
-python-multipart
 plotly
-numpy
 praat-parselmouth
+numpy
