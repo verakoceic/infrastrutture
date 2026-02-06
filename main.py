@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 from supabase import create_client, Client
+import streamlit as st
 
 app = FastAPI(title="Parkinson Telemonitoring API")
 
@@ -19,11 +20,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+supabase_url = st.secrets["SUPABASE_URL"]
+supabase_key = st.secrets["SUPABASE_KEY"]
 
-SUPABASE_URL = "https://viexdcbofgsopcrnnbzi.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZpZXhkY2JvZmdzb3Bjcm5uYnppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk1ODk4OTUsImV4cCI6MjA4NTE2NTg5NX0.7Xu5B8Vlz0j-wX39-i5W12Mw5cedX7VS9ACOPjSpLEs"
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Crea il client
+supabase: Client = create_client(supabase_url, supabase_key)
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
