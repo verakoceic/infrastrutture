@@ -18,8 +18,9 @@ try:
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 except:
     # Fallback per test locale
-    SUPABASE_URL = "https://qjrhkztpyrcorqqikufg.supabase.co"
-    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFqcmhrenRweXJjb3JxcWlrdWZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyMjQzOTgsImV4cCI6MjA4NTgwMDM5OH0.zthfNTfJWE44lpKNyW9aR3ggrpX4dL7j2-lpVs1tTGY"
+    SUPABASE_URL = "https://viexdcbofgsopcrnnbzi.supabase.co"
+    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZpZXhkY2JvZmdzb3Bjcm5uYnppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk1ODk4OTUsImV4cCI6MjA4NTE2NTg5NX0.7Xu5B8Vlz0j-wX39-i5W12Mw5cedX7VS9ACOPjSpLEs"
+
 # Client Supabase globale
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -203,8 +204,11 @@ def extract_vocal_features(audio_file):
 def save_visit(codice_fiscale: str, motor_updrs: float, features: dict) -> bool:
     """Salva visita nel database"""
     try:
-        supabase.table("visits").insert({
+        from datetime import datetime
+        
+        supabase.table("measurements").insert({
             "codice_fiscale": codice_fiscale.upper(),
+            "timestamp": datetime.now().isoformat(),
             "motor_updrs": motor_updrs,
             "jitter": features["jitter"],
             "shimmer": features["shimmer"],
@@ -223,7 +227,7 @@ def save_visit(codice_fiscale: str, motor_updrs: float, features: dict) -> bool:
 def get_patient_visits(codice_fiscale: str) -> pd.DataFrame:
     """Recupera storico visite paziente"""
     try:
-        response = supabase.table("visits").select("*").eq(
+        response = supabase.table("measurements").select("*").eq(
             "codice_fiscale", codice_fiscale.upper()
         ).order("timestamp", desc=False).execute()
         
@@ -272,12 +276,12 @@ def get_doctor_overview(doctor_username: str) -> dict:
         for patient in patients.data:
             cf = patient['codice_fiscale']
 
-            visits = supabase.table("visits").select("motor_updrs").eq(
+            measurements = supabase.table("measurements").select("motor_updrs").eq(
                 "codice_fiscale", cf
             ).order("timestamp", desc=False).execute()
 
-            if visits.data and len(visits.data) >= 2:
-                updrs_vals = [v['motor_updrs'] for v in visits.data]
+            if measurements.data and len(measurements.data) >= 2:
+                updrs_vals = [m['motor_updrs'] for m in measurements.data]
                 variazione = updrs_vals[-1] - updrs_vals[0]
                 all_trends.append(variazione)
 
